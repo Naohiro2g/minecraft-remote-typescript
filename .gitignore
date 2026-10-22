@@ -1,0 +1,13 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Operator-local agent context and notes
+CLAUDE.md
+NOTES_ja.md
+handoff-materials/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
