@@ -11,3 +11,8 @@ handoff-materials/
 .env
 .env.*
 !.env.example
+
+# Node.js build artifacts and dependencies
+node_modules/
+dist/
+*.tsbuildinfo
