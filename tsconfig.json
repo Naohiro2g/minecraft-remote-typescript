@@ -8,6 +8,7 @@
     "strict": true,
     "verbatimModuleSyntax": true,
     "declaration": true,
+    "types": ["node"],
     "noEmitOnError": true,
     "forceConsistentCasingInFileNames": true
   },
