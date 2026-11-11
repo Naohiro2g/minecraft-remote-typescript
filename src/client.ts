@@ -77,14 +77,14 @@ export async function connect(options: ConnectOptions): Promise<MinecraftRemote>
       return await openSession(options, token);
     } catch (error) {
       if (!(error instanceof RemoteError) || error.reason === undefined) throw error;
-      const tokenRejected = token !== undefined && REJECTED_TOKEN_REASONS.has(error.reason);
-      if (tokenRejected) {
+      if (token !== undefined && REJECTED_TOKEN_REASONS.has(error.reason)) {
         await credentials.delete(key);
         token = undefined;
+        // pairingしなくても、tokenなしのhelloへ戻る（DECISIONS 2026-11-11-01⑦）。
+        if (!paired) continue;
+        throw error;
       }
-      if (paired || !options.onPairing) throw error;
-      if (tokenRejected) continue;
-      if (error.reason !== 'auth_required') throw error;
+      if (error.reason !== 'auth_required' || paired || !options.onPairing) throw error;
       token = await pair(options, options.onPairing);
       paired = true;
       await credentials.save(key, token);

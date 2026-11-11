@@ -87,6 +87,17 @@ export async function startPeer(steps, clock) {
         connections: queued.length,
       };
     },
+    // stepsの後にclientが開いた接続の最初の行を読み、その接続を閉じる。
+    async unscriptedLine() {
+      const peerSocket = await within(nextSocket(), 'stepsの後の接続');
+      const line = await within(peerSocket.nextLine(), 'stepsの後の接続の行');
+      peerSocket.socket.destroy();
+      return JSON.parse(line);
+    },
+    // clientが送ったmessage。すべての接続の、読んだ行と読んでいない行。
+    received() {
+      return accepted.flatMap((peerSocket) => peerSocket.received()).map((line) => JSON.parse(line));
+    },
     async close() {
       for (const peerSocket of accepted) {
         peerSocket.socket.destroy();
@@ -107,6 +118,7 @@ export async function closedPort() {
 
 function wrapSocket(socket) {
   const lines = [];
+  const all = [];
   const readers = [];
   let buffer = Buffer.alloc(0);
   const ended = new Promise((resolve) => {
@@ -119,6 +131,7 @@ function wrapSocket(socket) {
     for (let end = buffer.indexOf(0x0a); end !== -1; end = buffer.indexOf(0x0a)) {
       const line = buffer.subarray(0, end).toString('utf8');
       buffer = buffer.subarray(end + 1);
+      all.push(line);
       const reader = readers.shift();
       if (reader) {
         reader(line);
@@ -133,6 +146,7 @@ function wrapSocket(socket) {
     nextLine: () =>
       lines.length > 0 ? Promise.resolve(lines.shift()) : new Promise((resolve) => readers.push(resolve)),
     unread: () => [...lines],
+    received: () => [...all],
   };
 }
 
