@@ -13,11 +13,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "eslint .",
-    "test": "npm run build && node --test",
+    "test": "npm run build && node --test --test-timeout=10000 \"test/**/*.test.mjs\"",
     "check": "npm run lint && npm test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/node": "^24.19.2",
     "eslint": "^10.13.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.72.0"

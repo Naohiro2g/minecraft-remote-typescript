@@ -4,7 +4,23 @@
 # Minecraft Remote for TypeScript
 
 現行 Minecraft Remote Protocol の一般用途 TypeScript Client Library です。Scratch Client とは別の成果物です。
-現在は開発基盤を用意した段階で、接続・hello・認証などの protocol 実装と公開 API はまだありません。
+今は最初の縦slice（Node.js の TCP で接続し、hello、認証、`world.setBlock`／`world.getBlock`）まであります。
+browser と WebSocket の経路はまだありません。npm には公開していません。
+
+```js
+import { connect, memoryCredentialStore } from '@mc-remote/client';
+
+const mc = await connect({
+  host: 'localhost',
+  credentials: memoryCredentialStore(),
+  onPairing: ({ command }) => console.log(`Minecraftの中で実行してください: ${command}`),
+});
+await mc.setBlock(0, 100, 0, 'gold_block');
+console.log(await mc.getBlock(0, 100, 0)); // { block_id: 'minecraft:gold_block', state: {} }
+await mc.close();
+```
+
+置いたブロックを読み戻して元へ戻す作例は [`examples/set-and-get-block.mjs`](examples/set-and-get-block.mjs) です。
 
 ## 開発を始める
 
@@ -25,11 +41,17 @@ lockfile による依存の再現と ESM の読み込み確認ができます。
 | --- | --- |
 | `npm run build` | TypeScript を ESM と型定義へ出力 |
 | `npm run lint` | ESLint による静的検査 |
-| `npm test` | build 後、root module の unit test を実行 |
+| `npm test` | build 後、共有fixtureと unit test を実行 |
 | `npm run check` | lint と test を実行 |
 
 GitHub Actions でも同じ Node.js の版と `npm ci`、`npm run check` を使います。
 package 名 `@mc-remote/client` は仮置きで、`private: true` としています。
+
+## 共有fixture
+
+`test/fixtures/protocol/` は、minecraft-remote-tooling の共有fixture（client bootstrap、protocol `23.2.1`）を
+固定した commit から copy したもので、MIT License です。取得元と digest は
+[`SOURCE_ja.md`](test/fixtures/protocol/SOURCE_ja.md) にあり、test が毎回確かめます。
 
 ## 設計の正本
 
