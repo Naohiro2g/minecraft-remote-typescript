@@ -9,12 +9,15 @@ const WAIT_MS = 2000;
 
 export class FakeClock {
   #now = 0;
+  /** sleepした長さ。呼ばれた順。 */
+  slept = [];
 
   now() {
     return this.#now;
   }
 
   sleep(milliseconds) {
+    this.slept.push(milliseconds);
     this.#now += milliseconds;
     return new Promise((resolve) => setImmediate(resolve));
   }
@@ -70,6 +73,10 @@ export async function startPeer(steps, clock) {
           break;
         case 'advance_time':
           clock.advance(step.milliseconds);
+          break;
+        case 'pause':
+          // F1に無い、このrepositoryのunit test用のop。実時間で待つ。
+          await new Promise((resolve) => setTimeout(resolve, step.milliseconds));
           break;
         default:
           throw new Error(`scripted peerが扱わないop: ${step.op}`);

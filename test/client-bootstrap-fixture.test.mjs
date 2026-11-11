@@ -9,6 +9,7 @@ import { setTimeout } from 'node:timers';
 import { URL } from 'node:url';
 
 import {
+  CompletionUnknownError,
   ConnectionError,
   ProtocolMismatchError,
   RemoteError,
@@ -288,9 +289,10 @@ async function runDialog(steps, { endsBeforeFallback = false } = {}) {
             call.settle('response');
             matched.push(action.id);
           } else if (error instanceof ConnectionError) {
-            // 送った後に閉じた呼び出しは、localな「完了不明」の失敗（wire 3.4）。
             call.settle('closed');
-            localFailures.push({ id: action.id, outcome: 'completion_unknown' });
+            if (error instanceof CompletionUnknownError) {
+              localFailures.push({ id: action.id, outcome: 'completion_unknown' });
+            }
           } else {
             throw error;
           }
@@ -319,7 +321,8 @@ async function runDialog(steps, { endsBeforeFallback = false } = {}) {
       token,
       discard_token: credentials.discarded().length > 0,
       pairing_required: challenges.length > 0,
-      connection: connection ?? lastClient?.state,
+      // F1の`connection`は接続の状態。`disconnected`は、接続が閉じて次の呼び出しでつなぎ直す状態。
+      connection: connection ?? (lastClient?.state === 'disconnected' ? 'closed' : lastClient?.state),
       matched_ids: matched,
       pending_ids: current.filter((call) => call.outcome === undefined).map((call) => call.id),
       unanswered_ids: current.filter((call) => call.outcome === 'closed').map((call) => call.id),

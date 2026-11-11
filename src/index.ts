@@ -1,9 +1,12 @@
 export {
+  type CallOptions,
   type Clock,
   type ConnectOptions,
   MinecraftRemote,
   type PairingChallenge,
   type PairingHandler,
+  type ReconnectEvent,
+  type ReconnectOptions,
   connect,
 } from './client.js';
 export {
@@ -13,8 +16,10 @@ export {
   noCredentialStore,
 } from './credentials.js';
 export {
+  CompletionUnknownError,
   ConnectionError,
   McRemoteError,
+  NotSentError,
   PairingExpiredError,
   ProtocolMismatchError,
   RemoteError,

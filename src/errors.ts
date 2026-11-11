@@ -66,11 +66,27 @@ export class ProtocolMismatchError extends McRemoteError {
 }
 
 /**
- * 接続できなかった、または応答の前に接続が閉じた。serverのerrorではないので`reason`を持たない。
- * 応答の前に閉じたrequestは、serverで処理されたかどうかが分からない。
+ * 接続できなかった、または接続が閉じた。serverのerrorではないので`reason`を持たない（DECISIONS 2026-11-11-01②）。
+ * requestの失敗は、送ったかどうかで`NotSentError`と`CompletionUnknownError`に分かれる。
  */
 export class ConnectionError extends McRemoteError {
   override name = 'ConnectionError';
+}
+
+/**
+ * requestを送らなかった。接続が閉じていて、つなぎ直さなかったか、つなぎ直せなかった（同⑤A）。
+ * serverでは処理されていない。つなぎ直せなかった理由はcauseにある。
+ */
+export class NotSentError extends ConnectionError {
+  override name = 'NotSentError';
+}
+
+/**
+ * requestを送った後、応答の前に接続が閉じた（相手のEOF、socketのerror、自分で閉じたとき、
+ * 応答を待ちきれずに回収したとき）。serverで処理されたかどうかが分からない（wire 3.4）。自動では送り直さない。
+ */
+export class CompletionUnknownError extends ConnectionError {
+  override name = 'CompletionUnknownError';
 }
 
 /** pairingの承認が、`auth.pairBegin`の`expires_in`の間に来なかった（wire 6.5）。 */
