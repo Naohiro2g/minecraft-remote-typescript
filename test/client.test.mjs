@@ -2,9 +2,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { PROTOCOL_VERSION, PairingExpiredError, connect, isCompatibleProtocol } from '@mc-remote/client';
+import { PROTOCOL_VERSION, PairingExpiredError, RemoteError, connect, isCompatibleProtocol } from '@mc-remote/client';
 
-import { FakeClock, startPeer } from './support/scripted-peer.mjs';
+import { FakeClock, VirtualClock, startPeer } from './support/scripted-peer.mjs';
 
 const HELLO_RESULT = {
   protocol: '23.2.1',
@@ -79,6 +79,49 @@ test('pairingは表示用の情報だけを渡し、expires_inを過ぎてもpen
     await peer.done;
     assert.deepEqual(challenges, [
       { pairCode: '123456', displayCode: '123-456', command: '/mcremote pair 123-456', expiresInSeconds: 1 },
+    ]);
+    assert.deepEqual(peer.unexpected(), { lines: [], connections: 0 });
+  } finally {
+    await peer.close();
+  }
+});
+
+// F1-OP-08はhelloと同じ接続でpairingするので、このclientの形（別の接続）で同じ判断を見る。
+test('⑧ 待つ間にexpires_inを過ぎたら、次のpollを送らずにclientが期限切れと判断する', async () => {
+  const clock = new VirtualClock();
+  const steps = [
+    { op: 'connect' },
+    { op: 'client_send', message: { jsonrpc: '2.0', id: 1, method: 'hello', params: { protocol: '23.2.1' } } },
+    {
+      op: 'peer_send',
+      message: { jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'auth required', data: { reason: 'auth_required' } } },
+    },
+    { op: 'connect' },
+    {
+      op: 'client_send',
+      message: { jsonrpc: '2.0', id: 1, method: 'auth.pairBegin', params: { token_type: 'session' } },
+    },
+    {
+      op: 'peer_send',
+      message: { jsonrpc: '2.0', id: 1, result: { pairing_id: 'test-pairing', pair_code: '123456', expires_in: 120 } },
+    },
+    {
+      op: 'client_send',
+      message: { jsonrpc: '2.0', id: 2, method: 'auth.pairPoll', params: { pairing_id: 'test-pairing' } },
+    },
+    { op: 'peer_send', message: { jsonrpc: '2.0', id: 2, result: { status: 'pending' } } },
+    // clientがpollの間隔を待ち始めてから、時計を進める。
+    { op: 'pause', milliseconds: 50 },
+    { op: 'advance_time', milliseconds: 150_000 },
+    { op: 'client_close' },
+  ];
+  const peer = await startPeer(steps, clock);
+  try {
+    const attempt = connect({ host: '127.0.0.1', port: peer.port, clock, onPairing: () => {} });
+    // peerが先に失敗したら、clientを待たずに閉じる。
+    await Promise.all([
+      assert.rejects(attempt, (error) => error instanceof PairingExpiredError && !(error instanceof RemoteError)),
+      peer.done,
     ]);
     assert.deepEqual(peer.unexpected(), { lines: [], connections: 0 });
   } finally {

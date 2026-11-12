@@ -1,6 +1,7 @@
 // Node.jsのTCPの上のJSON-RPC 2.0（wire 2、3）。1接続ごとにidを1から採番し、応答をidで対応させる。
 import net from 'node:net';
 
+import { type Clock, systemClock } from './clock.js';
 import { CompletionUnknownError, ConnectionError, NotSentError, RemoteError, type RemoteErrorObject } from './errors.js';
 import { LineDecoder, encodeFrame } from './framing.js';
 
@@ -14,6 +15,8 @@ export interface RpcConnectionOptions {
   responseTimeout?: number;
   /** TCPのkeepaliveを始めるまでの静かな時間（ms）。`false`なら使わない。既定は使わない。 */
   keepAliveDelay?: number | false;
+  /** responseTimeoutを数える時計（test用）。 */
+  clock?: Clock;
 }
 
 export interface RequestOptions {
@@ -34,6 +37,7 @@ export class RpcConnection {
   readonly #pending = new Map<number, Pending>();
   readonly #onDiscard: RpcConnectionOptions['onDiscard'];
   readonly #responseTimeout: number;
+  readonly #clock: Clock;
   readonly #closed: Promise<void>;
   #nextId = 1;
   #state: 'open' | 'closed' = 'open';
@@ -41,15 +45,16 @@ export class RpcConnection {
   #closeReason: string | undefined;
   // 応答待ちが始まった時刻か、最後に受信した時刻の遅い方。
   #lastProgress = 0;
-  #timer: ReturnType<typeof setTimeout> | undefined;
+  #cancelTimer: (() => void) | undefined;
 
   private constructor(socket: net.Socket, options: RpcConnectionOptions | undefined) {
     this.#socket = socket;
     this.#onDiscard = options?.onDiscard;
     this.#responseTimeout = options?.responseTimeout ?? Infinity;
+    this.#clock = options?.clock ?? systemClock;
     this.#decoder = new LineDecoder({ onInvalidLine: (line) => this.#onDiscard?.(line, 'not_json') });
     socket.on('data', (chunk: Buffer) => {
-      this.#lastProgress = performance.now();
+      this.#lastProgress = this.#clock.now();
       for (const frame of this.#decoder.push(chunk)) this.#receive(frame);
       if (this.#pending.size === 0) this.#disarm();
     });
@@ -110,7 +115,7 @@ export class RpcConnection {
     }
     checkTimeout('responseTimeout', options?.responseTimeout);
     const id = this.#nextId++;
-    if (this.#pending.size === 0) this.#lastProgress = performance.now();
+    if (this.#pending.size === 0) this.#lastProgress = this.#clock.now();
     return new Promise((resolve, reject) => {
       const responseTimeout = Math.max(this.#responseTimeout, options?.responseTimeout ?? 0);
       this.#pending.set(id, { method, responseTimeout, resolve, reject });
@@ -153,7 +158,7 @@ export class RpcConnection {
     if (this.#state === 'closed' || this.#pending.size === 0) return;
     const limit = Math.max(...[...this.#pending.values()].map((pending) => pending.responseTimeout));
     if (!Number.isFinite(limit)) return;
-    const remaining = this.#lastProgress + limit - performance.now();
+    const remaining = this.#lastProgress + limit - this.#clock.now();
     if (remaining <= 0) {
       this.#closeReason = `no data was received for ${limit} ms`;
       this.#finish();
@@ -161,13 +166,12 @@ export class RpcConnection {
       return;
     }
     // setTimeoutは約24.8日を超える値をすぐに発火させる。
-    this.#timer = setTimeout(() => this.#arm(), Math.min(remaining, MAX_TIMER_MS));
-    this.#timer.unref();
+    this.#cancelTimer = this.#clock.setTimer(() => this.#arm(), Math.min(remaining, MAX_TIMER_MS));
   }
 
   #disarm(): void {
-    clearTimeout(this.#timer);
-    this.#timer = undefined;
+    this.#cancelTimer?.();
+    this.#cancelTimer = undefined;
   }
 
   // 閉じたら、応答待ちをすべてlocalな「完了不明」の失敗にする。serverのerrorにはしない（同②）。

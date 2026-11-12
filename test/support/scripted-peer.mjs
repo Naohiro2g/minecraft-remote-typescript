@@ -7,8 +7,10 @@ import { clearTimeout, setImmediate, setTimeout } from 'node:timers';
 
 const WAIT_MS = 2000;
 
+// sleepすると、その長さだけすぐ進む時計。v1の`advance_time`もこの時計を進める。
 export class FakeClock {
   #now = 0;
+  #timers = new Set();
   /** sleepした長さ。呼ばれた順。 */
   slept = [];
 
@@ -18,12 +20,39 @@ export class FakeClock {
 
   sleep(milliseconds) {
     this.slept.push(milliseconds);
-    this.#now += milliseconds;
+    this.advance(milliseconds);
     return new Promise((resolve) => setImmediate(resolve));
   }
 
+  setTimer(callback, milliseconds) {
+    const timer = { at: this.#now + milliseconds, callback };
+    this.#timers.add(timer);
+    return () => this.#timers.delete(timer);
+  }
+
+  /** 時刻を進めてから、その時刻までのtimerを早い順に呼ぶ。飛ばした途中の時刻では呼ばない。 */
   advance(milliseconds) {
     this.#now += milliseconds;
+    for (;;) {
+      const due = [...this.#timers].filter((timer) => timer.at <= this.#now).sort((a, b) => a.at - b.at)[0];
+      if (!due) return;
+      this.#timers.delete(due);
+      due.callback();
+    }
+  }
+
+  /** 次のtimerまでの長さ。timerが無ければundefined。 */
+  untilNextTimer() {
+    const next = Math.min(...[...this.#timers].map((timer) => timer.at));
+    return Number.isFinite(next) ? next - this.#now : undefined;
+  }
+}
+
+// 進めるまでsleepが終わらない時計。v2の`advance_clock`だけが進める。
+export class VirtualClock extends FakeClock {
+  sleep(milliseconds) {
+    this.slept.push(milliseconds);
+    return new Promise((resolve) => this.setTimer(resolve, milliseconds));
   }
 }
 
@@ -123,7 +152,7 @@ export async function closedPort() {
   return port;
 }
 
-function wrapSocket(socket) {
+export function wrapSocket(socket) {
   const lines = [];
   const all = [];
   const readers = [];
@@ -157,7 +186,7 @@ function wrapSocket(socket) {
   };
 }
 
-function within(promise, where) {
+export function within(promise, where) {
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new Error(`${where}: ${WAIT_MS}ms待っても来ない`)), WAIT_MS);

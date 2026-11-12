@@ -1,6 +1,5 @@
 export {
   type CallOptions,
-  type Clock,
   type ConnectOptions,
   MinecraftRemote,
   type PairingChallenge,
@@ -9,6 +8,7 @@ export {
   type ReconnectOptions,
   connect,
 } from './client.js';
+export { type Clock } from './clock.js';
 export {
   type CredentialKey,
   type CredentialStore,
