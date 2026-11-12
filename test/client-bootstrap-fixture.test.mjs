@@ -9,6 +9,7 @@ import { setTimeout } from 'node:timers';
 import { URL } from 'node:url';
 
 import {
+  CompletionUnknownError,
   ConnectionError,
   ProtocolMismatchError,
   RemoteError,
@@ -25,19 +26,24 @@ const FIXTURE_DIR = new URL('./fixtures/protocol/', import.meta.url);
 const PINNED = {
   'client-bootstrap-framing-v23.2.1.json': [15131, 'be063b519b5d653a4bb4ec3da6f67e5d481a28dcf5913961c848b2b909d4b26d'],
   'client-bootstrap-hello-v23.2.1.json': [20913, '78297f05eb4352b0dabffab3242e933c1e68cb192bbb6d242019c7956c809d57'],
-  'client-bootstrap-pairing-v23.2.1.json': [19322, 'cdb2209d8a1d46fede158db50c3672936dad152c7fd2bec7ef5a068ed57a1fe1'],
+  'client-bootstrap-pairing-v23.2.1.json': [35577, '5864c23ef3f31af6134d36770cab80b569b708b35fd3fdbed69fb6db195e3aeb'],
   'client-bootstrap-blocks-v23.2.1.json': [45945, '664babdf3131a74e4aaf6d9e5dfb5e4cfc6e197df0a0d48142688820f1be813d'],
   'client-bootstrap-errors-v23.2.1.json': [9179, 'c458d3ffbae846cfb33c032eba14d8f0005c6a1fbe871290b53fcfec8ec41aaa'],
-  'client-bootstrap-close-v23.2.1.json': [14535, '44e9a4276bbd204671db0385f4f801cd3b152d0853ac943876ede73db6bd8dd1'],
-  'client-bootstrap-v1.schema.json': [9953, 'e848bd3a61d4c0a737f7f3a8963baf2fcbb83247486f3d8aa69f022bb55a7ede'],
+  'client-bootstrap-close-v23.2.1.json': [14884, 'a030cc72aa0e4f41575cb15610b1e06e941d3eab07157ce47f0eafe744475154'],
+  'client-bootstrap-v1.schema.json': [10916, '8c3e4ff6e7b5b0cf438d358578096579dafab699a40df9cd56de7b9513837413'],
   'block-value-v22.json': [3217, 'e8e108d59c40751d67a432543d75cb4bf9146ef9781721012085c80545b854f3'],
   LICENSE: [1070, 'aa329a0bafc839b95124306141db13a381de45818bf629e983c44ea55ab5a7fb'],
 };
 
-const SUITE_CASES = { framing: 7, hello: 10, pairing: 7, blocks: 12, errors: 3, close: 6 };
+const SUITE_CASES = { framing: 7, hello: 10, pairing: 10, blocks: 12, errors: 3, close: 6 };
 
 // 公開APIに無い操作（hello前のenvelope、発行paramsの拒否、別のpairing_id）を送るcaseは、RPC層で再生する。
 const RAW_CASES = new Set(['F1-FR-07', 'F1-AU-03', 'F1-AU-04']);
+
+// stepsがtokenを捨てたところで終わるcase。clientはその後、tokenなしのhelloへ戻る（DECISIONS 2026-11-11-01⑦）が、
+// caseはその接続を書いていない。runnerは、その接続でtokenなしのhelloが来たことを確かめて閉じ、
+// `reason`はstepsの中でclientが受けたerrorから読む。
+const ENDS_BEFORE_FALLBACK = new Set(['F1-AU-07']);
 
 const readFixture = (name) => readFileSync(new URL(name, FIXTURE_DIR));
 const readJson = (name) => JSON.parse(readFixture(name).toString('utf8'));
@@ -54,7 +60,7 @@ test('fixtureのbytesが固定したdigestと一致する', () => {
   }
 });
 
-test('fixtureがschemaの形に沿い、caseが45件そろう', () => {
+test('fixtureがschemaの形に沿い、caseが48件そろう', () => {
   const ops = new Set(schema.properties.cases.items.properties.steps.items.properties.op.enum);
   const expectedKeys = new Set(Object.keys(schema.properties.cases.items.properties.expected.properties));
   const ids = new Set();
@@ -74,7 +80,7 @@ test('fixtureがschemaの形に沿い、caseが45件そろう', () => {
       }
     }
   }
-  assert.equal(ids.size, 45);
+  assert.equal(ids.size, 48);
 });
 
 test('value_refsが同じディレクトリの値を指す', () => {
@@ -100,7 +106,7 @@ async function runCase(suite, testCase) {
   } else if (RAW_CASES.has(testCase.id)) {
     observed = await replayRaw(testCase.steps);
   } else {
-    observed = await runDialog(testCase.steps);
+    observed = await runDialog(testCase.steps, { endsBeforeFallback: ENDS_BEFORE_FALLBACK.has(testCase.id) });
   }
   checkExpected(suite, testCase, observed);
 }
@@ -174,11 +180,17 @@ async function replayRaw(steps) {
   }
 }
 
-// fixtureの対話を、公開APIの操作の列に読み替える。pairingの内側の接続とmessageは、connect()が自分で行う。
+// 拒まれたhelloの後も、同じ接続試行のままhelloかpairingへ進むreason（wire 6.5）。
+const AUTH_RETRY_REASONS = new Set(['token_expired', 'token_revoked', 'token_not_found', 'token_invalid', 'auth_required']);
+
+// fixtureの対話を、公開APIの操作の列に読み替える。pairingの内側の接続とmessage、認証reasonの後のhelloは、
+// connect()が自分で行う。
 function planDialog(steps) {
   const actions = [];
   let inPairing = false;
   let pairedHelloSent = false;
+  let helloSent = false;
+  let sameAttempt = false;
   for (const step of steps) {
     if (step.op === 'client_send') {
       const { id, method, params } = step.message;
@@ -187,15 +199,21 @@ function planDialog(steps) {
       } else if (method === 'hello') {
         if (inPairing) {
           pairedHelloSent = true;
-        } else {
+        } else if (!sameAttempt) {
           actions.push({ kind: 'connect', id, params });
         }
+        helloSent = true;
+        sameAttempt = false;
       } else {
         actions.push({ kind: 'call', id, method, params });
       }
-    } else if (step.op === 'peer_send' && pairedHelloSent) {
-      inPairing = false;
-      pairedHelloSent = false;
+    } else if (step.op === 'peer_send' && helloSent) {
+      helloSent = false;
+      sameAttempt = AUTH_RETRY_REASONS.has(step.message.error?.data?.reason);
+      if (pairedHelloSent) {
+        inPairing = false;
+        pairedHelloSent = false;
+      }
     } else if (step.op === 'client_close' && !inPairing) {
       actions.push({ kind: 'close' });
     }
@@ -203,15 +221,17 @@ function planDialog(steps) {
   return actions;
 }
 
-async function runDialog(steps) {
+async function runDialog(steps, { endsBeforeFallback = false } = {}) {
   const clock = new FakeClock();
   const peer = await startPeer(steps, clock);
+  const received = observeRemoteErrors();
   const credentials = recordingStore();
   const pairs = steps.some((step) => step.message?.method === 'auth.pairBegin');
   const challenges = [];
   const clients = [];
   const calls = [];
   const matched = [];
+  const localFailures = [];
   let lastClient;
   let lastResult;
   let lastError;
@@ -219,7 +239,7 @@ async function runDialog(steps) {
   let connection;
 
   // peerが先に失敗したら接続を閉じ、応答待ちのclientを解く。
-  const peerDone = peer.done.catch(async (error) => {
+  const peerDone = (endsBeforeFallback ? peer.done.then(() => closeFallbackHello(peer)) : peer.done).catch(async (error) => {
     await peer.close();
     throw error;
   });
@@ -270,6 +290,9 @@ async function runDialog(steps) {
             matched.push(action.id);
           } else if (error instanceof ConnectionError) {
             call.settle('closed');
+            if (error instanceof CompletionUnknownError) {
+              localFailures.push({ id: action.id, outcome: 'completion_unknown' });
+            }
           } else {
             throw error;
           }
@@ -292,22 +315,51 @@ async function runDialog(steps) {
     const token = await credentials.peek();
     return {
       result: lastResult,
-      reason: lastError?.reason,
+      reason: endsBeforeFallback ? received.reasons.at(-1) : lastError?.reason,
       error: lastError instanceof RemoteError ? lastError.toJSON() : undefined,
       compatible,
       token,
-      discard_token: token === undefined,
+      discard_token: credentials.discarded().length > 0,
       pairing_required: challenges.length > 0,
-      connection: connection ?? lastClient?.state,
+      // F1の`connection`は接続の状態。`disconnected`は、接続が閉じて次の呼び出しでつなぎ直す状態。
+      connection: connection ?? (lastClient?.state === 'disconnected' ? 'closed' : lastClient?.state),
       matched_ids: matched,
       pending_ids: current.filter((call) => call.outcome === undefined).map((call) => call.id),
       unanswered_ids: current.filter((call) => call.outcome === 'closed').map((call) => call.id),
       completed_ids: current.filter((call) => call.outcome === 'response').map((call) => call.id),
+      local_failures: localFailures,
+      pairing_attempts: peer.received().filter((message) => message.method === 'auth.pairBegin').length,
     };
   } finally {
+    received.restore();
     await Promise.all(clients.map((client) => client.close()));
     await peer.close();
   }
+}
+
+// stepsの後にclientが開いた接続で、tokenなしのhelloが来たことを確かめ、応答せずに閉じる。
+async function closeFallbackHello(peer) {
+  const message = await peer.unscriptedLine();
+  assert.equal(message.method, 'hello');
+  assert.equal(message.params.auth, undefined, 'tokenを捨てた後のhelloにtokenが載っている');
+}
+
+// clientがRPC層で受けたserverのerrorのreasonを、受けた順に記録する。
+function observeRemoteErrors() {
+  const reasons = [];
+  const { request } = RpcConnection.prototype;
+  RpcConnection.prototype.request = function (...args) {
+    return request.apply(this, args).catch((error) => {
+      if (error instanceof RemoteError) reasons.push(error.reason);
+      throw error;
+    });
+  };
+  return {
+    reasons,
+    restore() {
+      RpcConnection.prototype.request = request;
+    },
+  };
 }
 
 function invoke(client, method, params) {
@@ -331,9 +383,10 @@ function track(calls, id, kind) {
   };
 }
 
-// memoryCredentialStoreを包み、runnerが中身を観測できるようにする。
+// memoryCredentialStoreを包み、runnerが中身と、捨てたtokenを観測できるようにする。
 function recordingStore() {
   const inner = memoryCredentialStore();
+  const discarded = [];
   let lastKey;
   let seeded;
   return {
@@ -349,10 +402,13 @@ function recordingStore() {
       lastKey = key;
       return inner.save(key, token);
     },
-    delete: (key) => {
+    async delete(key) {
       lastKey = key;
+      const token = await inner.load(key);
+      if (token !== undefined) discarded.push(token);
       return inner.delete(key);
     },
+    discarded: () => [...discarded],
     seed(token) {
       seeded = token;
     },
@@ -378,6 +434,7 @@ function checkExpected(suite, testCase, observed) {
       case 'pending_ids':
       case 'unanswered_ids':
       case 'completed_ids':
+      case 'local_failures':
         assert.deepEqual(observed[key], expected, where);
         break;
       case 'reason':
@@ -387,6 +444,7 @@ function checkExpected(suite, testCase, observed) {
       case 'discard_token':
       case 'pairing_required':
       case 'connection':
+      case 'pairing_attempts':
         assert.equal(observed[key], expected, where);
         break;
       default:

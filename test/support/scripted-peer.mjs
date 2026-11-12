@@ -9,12 +9,15 @@ const WAIT_MS = 2000;
 
 export class FakeClock {
   #now = 0;
+  /** sleepした長さ。呼ばれた順。 */
+  slept = [];
 
   now() {
     return this.#now;
   }
 
   sleep(milliseconds) {
+    this.slept.push(milliseconds);
     this.#now += milliseconds;
     return new Promise((resolve) => setImmediate(resolve));
   }
@@ -71,6 +74,10 @@ export async function startPeer(steps, clock) {
         case 'advance_time':
           clock.advance(step.milliseconds);
           break;
+        case 'pause':
+          // F1に無い、このrepositoryのunit test用のop。実時間で待つ。
+          await new Promise((resolve) => setTimeout(resolve, step.milliseconds));
+          break;
         default:
           throw new Error(`scripted peerが扱わないop: ${step.op}`);
       }
@@ -86,6 +93,17 @@ export async function startPeer(steps, clock) {
         lines: accepted.flatMap((peerSocket) => peerSocket.unread()),
         connections: queued.length,
       };
+    },
+    // stepsの後にclientが開いた接続の最初の行を読み、その接続を閉じる。
+    async unscriptedLine() {
+      const peerSocket = await within(nextSocket(), 'stepsの後の接続');
+      const line = await within(peerSocket.nextLine(), 'stepsの後の接続の行');
+      peerSocket.socket.destroy();
+      return JSON.parse(line);
+    },
+    // clientが送ったmessage。すべての接続の、読んだ行と読んでいない行。
+    received() {
+      return accepted.flatMap((peerSocket) => peerSocket.received()).map((line) => JSON.parse(line));
     },
     async close() {
       for (const peerSocket of accepted) {
@@ -107,6 +125,7 @@ export async function closedPort() {
 
 function wrapSocket(socket) {
   const lines = [];
+  const all = [];
   const readers = [];
   let buffer = Buffer.alloc(0);
   const ended = new Promise((resolve) => {
@@ -119,6 +138,7 @@ function wrapSocket(socket) {
     for (let end = buffer.indexOf(0x0a); end !== -1; end = buffer.indexOf(0x0a)) {
       const line = buffer.subarray(0, end).toString('utf8');
       buffer = buffer.subarray(end + 1);
+      all.push(line);
       const reader = readers.shift();
       if (reader) {
         reader(line);
@@ -133,6 +153,7 @@ function wrapSocket(socket) {
     nextLine: () =>
       lines.length > 0 ? Promise.resolve(lines.shift()) : new Promise((resolve) => readers.push(resolve)),
     unread: () => [...lines],
+    received: () => [...all],
   };
 }
 

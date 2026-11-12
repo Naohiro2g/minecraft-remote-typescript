@@ -22,6 +22,21 @@ await mc.close();
 
 置いたブロックを読み戻して元へ戻す作例は [`examples/set-and-get-block.mjs`](examples/set-and-get-block.mjs) です。
 
+## 接続が切れたとき
+
+- 応答は長く待ちます。応答待ちの間に何も届かないまま `responseTimeout`（既定15分）を過ぎると、
+  接続を閉じます。
+- 接続が切れると、次の呼び出しのときに自動でつなぎ直します。つなぎ直すと、最後に確かめた dimension と origin を戻します。
+  - 無効にするには `reconnect: false` を渡します。
+  - つなぎ直したことは `onReconnect` で知らせます。
+  - pairing が要る場合は、つなぎ直しません。
+- 送った命令は、自動では送り直しません。失敗は次の2つに分かれます。
+
+| error | 意味 |
+| --- | --- |
+| `NotSentError` | 送っていない。つなぎ直せなかった理由は `cause` にある |
+| `CompletionUnknownError` | 送った後に接続が切れ、実行されたかどうか分からない |
+
 ## 開発を始める
 
 [mise](https://mise.jdx.dev/) を用意し、このリポジトリで次を実行してください。
