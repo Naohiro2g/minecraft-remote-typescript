@@ -5,7 +5,7 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { setTimeout } from 'node:timers';
+import { setImmediate, setTimeout } from 'node:timers';
 import { URL } from 'node:url';
 
 import {
@@ -25,17 +25,20 @@ const FIXTURE_DIR = new URL('./fixtures/protocol/', import.meta.url);
 
 const PINNED = {
   'client-bootstrap-framing-v23.2.1.json': [15131, 'be063b519b5d653a4bb4ec3da6f67e5d481a28dcf5913961c848b2b909d4b26d'],
-  'client-bootstrap-hello-v23.2.1.json': [20913, '78297f05eb4352b0dabffab3242e933c1e68cb192bbb6d242019c7956c809d57'],
+  'client-bootstrap-hello-v23.2.1.json': [26046, 'caf24ad5382e411ba54172b05d6020fc59fc429dc0251ff28db3908b4189784e'],
   'client-bootstrap-pairing-v23.2.1.json': [35577, '5864c23ef3f31af6134d36770cab80b569b708b35fd3fdbed69fb6db195e3aeb'],
   'client-bootstrap-blocks-v23.2.1.json': [45945, '664babdf3131a74e4aaf6d9e5dfb5e4cfc6e197df0a0d48142688820f1be813d'],
   'client-bootstrap-errors-v23.2.1.json': [9179, 'c458d3ffbae846cfb33c032eba14d8f0005c6a1fbe871290b53fcfec8ec41aaa'],
-  'client-bootstrap-close-v23.2.1.json': [14884, 'a030cc72aa0e4f41575cb15610b1e06e941d3eab07157ce47f0eafe744475154'],
-  'client-bootstrap-v1.schema.json': [10916, '8c3e4ff6e7b5b0cf438d358578096579dafab699a40df9cd56de7b9513837413'],
+  'client-bootstrap-close-v23.2.1.json': [20879, '2abb6f48942e1dc7bc42014ba016c3d08a6632c59445c048b008a4c411ea1e30'],
+  'client-bootstrap-operations-v23.2.1.json': [66029, '3ccc97e4c80dbf51a0de9c27ef4e974fffa1ee7ec1708aeb7a49ffe14b8366a4'],
+  'client-bootstrap-v1.schema.json': [11465, '4dcce4bc0a63c5e2536411e5276a85ceb8fa20bf5fef64ce2f7a2b8deb069774'],
+  'client-bootstrap-v2.schema.json': [19423, 'f533de2755974147dd3d7c8f61fa3b190fc5031188a67d648b876ee33f979a77'],
   'block-value-v22.json': [3217, 'e8e108d59c40751d67a432543d75cb4bf9146ef9781721012085c80545b854f3'],
   LICENSE: [1070, 'aa329a0bafc839b95124306141db13a381de45818bf629e983c44ea55ab5a7fb'],
 };
 
-const SUITE_CASES = { framing: 7, hello: 10, pairing: 10, blocks: 12, errors: 3, close: 6 };
+// v1の6 file。v2のoperationsは client-bootstrap-operations.test.mjs が読む。
+const SUITE_CASES = { framing: 7, hello: 12, pairing: 10, blocks: 12, errors: 3, close: 8 };
 
 // 公開APIに無い操作（hello前のenvelope、発行paramsの拒否、別のpairing_id）を送るcaseは、RPC層で再生する。
 const RAW_CASES = new Set(['F1-FR-07', 'F1-AU-03', 'F1-AU-04']);
@@ -60,7 +63,7 @@ test('fixtureのbytesが固定したdigestと一致する', () => {
   }
 });
 
-test('fixtureがschemaの形に沿い、caseが48件そろう', () => {
+test('fixtureがschemaの形に沿い、caseが52件そろう', () => {
   const ops = new Set(schema.properties.cases.items.properties.steps.items.properties.op.enum);
   const expectedKeys = new Set(Object.keys(schema.properties.cases.items.properties.expected.properties));
   const ids = new Set();
@@ -80,7 +83,7 @@ test('fixtureがschemaの形に沿い、caseが48件そろう', () => {
       }
     }
   }
-  assert.equal(ids.size, 48);
+  assert.equal(ids.size, 52);
 });
 
 test('value_refsが同じディレクトリの値を指す', () => {
@@ -183,15 +186,18 @@ async function replayRaw(steps) {
 // 拒まれたhelloの後も、同じ接続試行のままhelloかpairingへ進むreason（wire 6.5）。
 const AUTH_RETRY_REASONS = new Set(['token_expired', 'token_revoked', 'token_not_found', 'token_invalid', 'auth_required']);
 
+const CLIENT_OPS = new Set(['client_send', 'client_close']);
+
 // fixtureの対話を、公開APIの操作の列に読み替える。pairingの内側の接続とmessage、認証reasonの後のhelloは、
 // connect()が自分で行う。
+// 次のstepもclientの送信かcloseなら、clientは応答を待たずに続ける（`overlap`）。
 function planDialog(steps) {
   const actions = [];
   let inPairing = false;
   let pairedHelloSent = false;
   let helloSent = false;
   let sameAttempt = false;
-  for (const step of steps) {
+  for (const [index, step] of steps.entries()) {
     if (step.op === 'client_send') {
       const { id, method, params } = step.message;
       if (method === 'auth.pairBegin' || method === 'auth.pairPoll') {
@@ -205,7 +211,7 @@ function planDialog(steps) {
         helloSent = true;
         sameAttempt = false;
       } else {
-        actions.push({ kind: 'call', id, method, params });
+        actions.push({ kind: 'call', id, method, params, overlap: CLIENT_OPS.has(steps[index + 1]?.op) });
       }
     } else if (step.op === 'peer_send' && helloSent) {
       helloSent = false;
@@ -232,6 +238,7 @@ async function runDialog(steps, { endsBeforeFallback = false } = {}) {
   const calls = [];
   const matched = [];
   const localFailures = [];
+  const overlapping = [];
   let lastClient;
   let lastResult;
   let lastError;
@@ -276,27 +283,40 @@ async function runDialog(steps, { endsBeforeFallback = false } = {}) {
           connection = error instanceof ConnectionError ? 'failed' : 'closed';
         }
       } else if (action.kind === 'close') {
-        await lastClient.close();
+        // 互換判定で失敗したconnect()は、clientが自分で閉じている。runnerは閉じない（F1-HE-11、12）。
+        // 重ねた呼び出しがrequestを書き終えてから閉じる（F1-CL-08）。
+        await new Promise((resolve) => setImmediate(resolve));
+        if (lastClient) await lastClient.close();
       } else {
-        const call = track(calls, action.id, action.method);
-        try {
-          lastResult = await invoke(lastClient, action.method, action.params);
-          call.settle('response');
-          matched.push(action.id);
-        } catch (error) {
-          lastError = error;
-          if (error instanceof RemoteError) {
-            call.settle('response');
-            matched.push(action.id);
-          } else if (error instanceof ConnectionError) {
-            call.settle('closed');
-            if (error instanceof CompletionUnknownError) {
-              localFailures.push({ id: action.id, outcome: 'completion_unknown' });
-            }
-          } else {
-            throw error;
-          }
+        const result = runCall(action);
+        if (action.overlap) {
+          overlapping.push(result);
+        } else {
+          await result;
         }
+      }
+    }
+    await Promise.all(overlapping);
+  };
+
+  const runCall = async (action) => {
+    const call = track(calls, action.id, action.method);
+    try {
+      lastResult = await invoke(lastClient, action.method, action.params);
+      call.settle('response');
+      matched.push(action.id);
+    } catch (error) {
+      lastError = error;
+      if (error instanceof RemoteError) {
+        call.settle('response');
+        matched.push(action.id);
+      } else if (error instanceof ConnectionError) {
+        call.settle('closed');
+        if (error instanceof CompletionUnknownError) {
+          localFailures.push({ id: action.id, outcome: 'completion_unknown' });
+        }
+      } else {
+        throw error;
       }
     }
   };
@@ -329,6 +349,10 @@ async function runDialog(steps, { endsBeforeFallback = false } = {}) {
       completed_ids: current.filter((call) => call.outcome === 'response').map((call) => call.id),
       local_failures: localFailures,
       pairing_attempts: peer.received().filter((message) => message.method === 'auth.pairBegin').length,
+      application_failure:
+        lastError instanceof ProtocolMismatchError && lastError.source === 'client'
+          ? { source: 'client', kind: 'incompatible_protocol' }
+          : undefined,
     };
   } finally {
     received.restore();
@@ -435,6 +459,7 @@ function checkExpected(suite, testCase, observed) {
       case 'unanswered_ids':
       case 'completed_ids':
       case 'local_failures':
+      case 'application_failure':
         assert.deepEqual(observed[key], expected, where);
         break;
       case 'reason':
