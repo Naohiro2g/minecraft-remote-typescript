@@ -1,4 +1,5 @@
 // 一般用途のClient API。接続、hello、world.setBlock／world.getBlock、close、切れた後のつなぎ直し。
+import { type Clock, systemClock } from './clock.js';
 import { type CredentialKey, type CredentialStore, noCredentialStore } from './credentials.js';
 import {
   ConnectionError,
@@ -45,7 +46,7 @@ export interface ConnectOptions {
   reconnect?: boolean | ReconnectOptions;
   /** つなぎ直したことを知らせる。 */
   onReconnect?: (event: ReconnectEvent) => void;
-  /** pairingとつなぎ直しの時計（test用）。 */
+  /** pairing、つなぎ直し、`responseTimeout`の時計（test用）。 */
   clock?: Clock;
 }
 
@@ -59,7 +60,10 @@ export interface ReconnectOptions {
   giveUpAfter?: number;
 }
 
-/** つなぎ直した後のhello。前の接続で得たentity handleやevent cursorは、新しい接続では使えない。 */
+/**
+ * つなぎ直した後のhello。つなぎ直したことと、切れていた間のeventが失われたことを知らせる。
+ * 前の接続で得たentity handleやevent cursorは、新しい接続では使えない。
+ */
 export interface ReconnectEvent {
   readonly previous: HelloResult;
   readonly hello: HelloResult;
@@ -74,16 +78,6 @@ export interface CallOptions {
 }
 
 export type PairingHandler = (challenge: PairingChallenge) => void | Promise<void>;
-
-export interface Clock {
-  now(): number;
-  sleep(milliseconds: number): Promise<void>;
-}
-
-const systemClock: Clock = {
-  now: () => performance.now(),
-  sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
-};
 
 /** pairingの間、表示してよい情報。`pairing_id`は渡さない。 */
 export interface PairingChallenge {
@@ -178,13 +172,14 @@ async function pair(options: ConnectOptions, onPairing: PairingHandler): Promise
       expiresInSeconds: begin.expires_in,
     });
     for (;;) {
-      await clock.sleep(PAIR_POLL_INTERVAL_MS);
       const poll = await connection.request('auth.pairPoll', { pairing_id: begin.pairing_id });
       const status = (poll as { status?: unknown } | null)?.status;
       if (status === 'ok' && typeof (poll as { token?: unknown }).token === 'string') {
         return (poll as { token: string }).token;
       }
       if (status !== 'pending') throw new McRemoteError('auth.pairPoll result is malformed');
+      await clock.sleep(PAIR_POLL_INTERVAL_MS);
+      // 期限を過ぎたら、次のpollを送らずにclientが判断して止める（DECISIONS 2026-11-11-01⑧）。
       if (clock.now() >= deadline) throw new PairingExpiredError();
     }
   } finally {
@@ -363,6 +358,7 @@ function connectionOptions(options: ConnectOptions): RpcConnectionOptions {
   return {
     responseTimeout: options.responseTimeout ?? DEFAULT_RESPONSE_TIMEOUT_MS,
     keepAliveDelay: options.keepAliveDelay ?? DEFAULT_KEEPALIVE_DELAY_MS,
+    ...(options.clock && { clock: options.clock }),
   };
 }
 

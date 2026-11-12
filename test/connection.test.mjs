@@ -1,4 +1,5 @@
-// 応答の待ち方とつなぎ直し（DECISIONS 2026-11-11-01の②〜⑤、wire 3.4）。F1にcaseが届くまで、ここで持つ。
+// 応答の待ち方とつなぎ直し（DECISIONS 2026-11-11-01の②〜⑤、wire 3.4）。F1 v2（operations）は仮想の時計で見る。
+// ここでは、実時間の時計と、F1が数値を決めないbackoffなどを見る。
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import test from 'node:test';
@@ -69,7 +70,7 @@ async function withPeer(steps, run, clock = new FakeClock()) {
 test('③ 最後の受信からresponseTimeoutを超えたら、応答待ちを完了不明にして接続を回収する', LIMIT, async () => {
   const steps = [{ op: 'connect' }, hello(), reply(1, helloResult()), send(2, 'world.getBlock', [0, 0, 0])];
   await withPeer(steps, async ({ connect }) => {
-    const remote = await connect({ responseTimeout: 100, reconnect: false });
+    const remote = await connect({ responseTimeout: 100, reconnect: false, clock: undefined });
     const started = performance.now();
     await assert.rejects(remote.getBlock(0, 0, 0), CompletionUnknownError);
     assert.ok(performance.now() - started >= 95, '期限より早く回収した');
@@ -90,7 +91,7 @@ test('③ 途中で受信するたびに数え直す', LIMIT, async () => {
     reply(3, AIR),
   ];
   await withPeer(steps, async ({ connect }) => {
-    const remote = await connect({ responseTimeout: 250 });
+    const remote = await connect({ responseTimeout: 250, clock: undefined });
     assert.deepEqual(await Promise.all([remote.getBlock(0, 0, 0), remote.getBlock(1, 0, 0)]), [AIR, AIR]);
   });
 });
@@ -105,7 +106,7 @@ test('③ 応答待ちが無い間の静けさは数えない', LIMIT, async () 
     reply(2, AIR),
   ];
   await withPeer(steps, async ({ connect }) => {
-    const remote = await connect({ responseTimeout: 100 });
+    const remote = await connect({ responseTimeout: 100, clock: undefined });
     await new Promise((resolve) => setTimeout(resolve, 200));
     assert.deepEqual(await remote.getBlock(0, 0, 0), AIR);
   });
@@ -121,7 +122,7 @@ test('③ 呼び出しごとにresponseTimeoutを延ばせる', LIMIT, async () 
     reply(2, AIR),
   ];
   await withPeer(steps, async ({ connect }) => {
-    const remote = await connect({ responseTimeout: 100 });
+    const remote = await connect({ responseTimeout: 100, clock: undefined });
     assert.deepEqual(await remote.getBlock(0, 0, 0, { responseTimeout: 500 }), AIR);
   });
 });
