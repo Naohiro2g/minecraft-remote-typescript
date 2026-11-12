@@ -2,7 +2,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { PROTOCOL_VERSION, PairingExpiredError, RemoteError, connect, isCompatibleProtocol } from '@mc-remote/client';
+import {
+  PROTOCOL_VERSION,
+  PairingExpiredError,
+  RemoteError,
+  connect,
+  isCompatibleProtocol,
+  memoryCredentialStore,
+} from '@mc-remote/client';
 
 import { FakeClock, VirtualClock, startPeer } from './support/scripted-peer.mjs';
 
@@ -123,6 +130,98 @@ test('⑧ 待つ間にexpires_inを過ぎたら、次のpollを送らずにclien
       assert.rejects(attempt, (error) => error instanceof PairingExpiredError && !(error instanceof RemoteError)),
       peer.done,
     ]);
+    assert.deepEqual(peer.unexpected(), { lines: [], connections: 0 });
+  } finally {
+    await peer.close();
+  }
+});
+
+const authRequired = [
+  { op: 'connect' },
+  { op: 'client_send', message: { jsonrpc: '2.0', id: 1, method: 'hello', params: { protocol: '23.2.1' } } },
+  {
+    op: 'peer_send',
+    message: { jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'auth required', data: { reason: 'auth_required' } } },
+  },
+  { op: 'peer_eof' },
+];
+const pairBegin = [
+  { op: 'connect' },
+  { op: 'client_send', message: { jsonrpc: '2.0', id: 1, method: 'auth.pairBegin', params: { token_type: 'session' } } },
+  {
+    op: 'peer_send',
+    message: { jsonrpc: '2.0', id: 1, result: { pairing_id: 'test-pairing', pair_code: '123456', expires_in: 120 } },
+  },
+];
+const poll = (id) => ({
+  op: 'client_send',
+  message: { jsonrpc: '2.0', id, method: 'auth.pairPoll', params: { pairing_id: 'test-pairing' } },
+});
+const pending = (id) => ({ op: 'peer_send', message: { jsonrpc: '2.0', id, result: { status: 'pending' } } });
+// F1-AU-12の、応答の前に切れたpollまで。
+const lostPoll = [...authRequired, ...pairBegin, poll(2), pending(2), poll(3), { op: 'peer_eof' }];
+
+// F1-AU-12の先。F1はここをcaseにしていない。
+test('2026-11-12-05 応答の前に切れたpollの後、同じpairing_idの次のpollを新しい接続で送り、承認の後にtokenつきのhelloへ進む', async () => {
+  const steps = [
+    ...lostPoll,
+    { op: 'connect' },
+    poll(1),
+    pending(1),
+    { op: 'approve_pairing' },
+    poll(2),
+    { op: 'peer_send', message: { jsonrpc: '2.0', id: 2, result: { status: 'ok', token: 'test-token' } } },
+    { op: 'client_close' },
+    { op: 'connect' },
+    {
+      op: 'client_send',
+      message: { jsonrpc: '2.0', id: 1, method: 'hello', params: { protocol: '23.2.1', auth: { token: 'test-token' } } },
+    },
+    { op: 'peer_send', message: { jsonrpc: '2.0', id: 1, result: HELLO_RESULT } },
+  ];
+  const clock = new FakeClock();
+  const peer = await startPeer(steps, clock);
+  let challenges = 0;
+  try {
+    const remote = await connect({
+      host: '127.0.0.1',
+      port: peer.port,
+      clock,
+      credentials: memoryCredentialStore(),
+      onPairing: () => void challenges++,
+    });
+    await peer.done;
+    assert.deepEqual(remote.hello, HELLO_RESULT);
+    assert.equal(challenges, 1);
+    assert.equal(peer.received().filter((message) => message.method === 'auth.pairBegin').length, 1);
+    assert.deepEqual(peer.unexpected(), { lines: [], connections: 0 });
+    await remote.close();
+  } finally {
+    await peer.close();
+  }
+});
+
+test('2026-11-12-05 続けたpollがpair_not_foundで失敗したら、二度目のpairingをせずにapplicationへ失敗を返す', async () => {
+  const steps = [
+    ...lostPoll,
+    { op: 'connect' },
+    poll(1),
+    {
+      op: 'peer_send',
+      message: { jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'not found', data: { reason: 'pair_not_found' } } },
+    },
+    { op: 'client_close' },
+  ];
+  const clock = new FakeClock();
+  const peer = await startPeer(steps, clock);
+  let challenges = 0;
+  try {
+    const attempt = connect({ host: '127.0.0.1', port: peer.port, clock, onPairing: () => void challenges++ });
+    await Promise.all([
+      assert.rejects(attempt, (error) => error instanceof RemoteError && error.reason === 'pair_not_found'),
+      peer.done,
+    ]);
+    assert.equal(challenges, 1);
     assert.deepEqual(peer.unexpected(), { lines: [], connections: 0 });
   } finally {
     await peer.close();

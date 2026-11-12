@@ -30,6 +30,7 @@ await mc.close();
   - 無効にするには `reconnect: false` を渡します。
   - つなぎ直したことは `onReconnect` で知らせます。
   - pairing が要る場合は、つなぎ直しません。
+- `connect()` の pairing の途中で接続が切れたときは、pair code の期限の内なら、新しい接続で承認の確認を続けます。
 - 送った命令は、自動では送り直しません。失敗は次の2つに分かれます。
 
 | error | 意味 |
