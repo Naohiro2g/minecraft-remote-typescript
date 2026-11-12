@@ -10,8 +10,6 @@ import process from 'node:process';
 
 import { connect, memoryCredentialStore } from '@mc-remote/client';
 
-const AIR = new Set(['minecraft:air', 'minecraft:cave_air', 'minecraft:void_air']);
-
 const say = (line) => process.stdout.write(`${line}\n`);
 
 const host = process.env.MCREMOTE_HOST;
@@ -41,10 +39,8 @@ if (remote) {
   try {
     say(`hello: protocol ${remote.hello.protocol}, Minecraft ${remote.hello.mc_version}`);
 
+    // 元のブロックはIDとstateで戻す。チェストの中身や看板の文字など、getBlockで読めないものは戻らない。
     const before = await remote.getBlock(x, y, z);
-    if (!AIR.has(before.block_id)) {
-      throw new Error(`置く位置が空気ではない（${before.block_id}）。MCREMOTE_POSで別の位置を選んでください`);
-    }
 
     await remote.setBlock(x, y, z, 'gold_block');
     const placed = await remote.getBlock(x, y, z);
