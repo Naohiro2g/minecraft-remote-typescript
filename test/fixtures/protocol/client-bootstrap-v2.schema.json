@@ -14,7 +14,7 @@
       "type": "object",
       "properties": {
         "commit": {
-          "const": "076a127a22eaf0188c1d13822bfd55bfeee9ec38"
+          "enum": ["076a127a22eaf0188c1d13822bfd55bfeee9ec38", "cd2ba766576215924ef2e8182b100c6be8c78aaf"]
         },
         "instructions": {
           "const": "00-hub/polyglot-f1-e2-ops-fixture-instructions_ja.md"

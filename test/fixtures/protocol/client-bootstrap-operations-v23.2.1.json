@@ -3,7 +3,7 @@
   "protocol": "23.2.1",
   "suite": "operations",
   "knowledge_contract": {
-    "commit": "076a127a22eaf0188c1d13822bfd55bfeee9ec38",
+    "commit": "cd2ba766576215924ef2e8182b100c6be8c78aaf",
     "instructions": "00-hub/polyglot-f1-e2-ops-fixture-instructions_ja.md"
   },
   "cases": [
@@ -1548,7 +1548,7 @@
       ],
       "preconditions": [
         "pairing_ttlの基準はpeerが示したexpires_in。最後の時計操作はその期限を超えた現在時刻へ一度で進め、飛ばした時刻のpollは再生しない。時計更新後は次pollを送る前に期限切れを判断する。",
-        "終了後のtransportを閉じるかはこのcaseでは要求しない。connectionsはsent_countとpending_idsだけを比較し、stateはcaseから省く。"
+        "期限切れで終わったc2を閉じるかは要求しない。c1はpeerのEOFでclosed、c2はsent_countとpending_idsだけを比較しstateを省く。"
       ],
       "steps": [
         {
@@ -1596,8 +1596,16 @@
           }
         },
         {
+          "op": "peer_eof",
+          "connection": "c1"
+        },
+        {
+          "op": "expect_connect",
+          "connection": "c2"
+        },
+        {
           "op": "expect_send",
-          "connection": "c1",
+          "connection": "c2",
           "message": {
             "jsonrpc": "2.0",
             "method": "auth.pairBegin",
@@ -1609,15 +1617,15 @@
                 "locale": "ja"
               }
             },
-            "id": 2
+            "id": 1
           }
         },
         {
           "op": "peer_send",
-          "connection": "c1",
+          "connection": "c2",
           "message": {
             "jsonrpc": "2.0",
-            "id": 2,
+            "id": 1,
             "result": {
               "pairing_id": "fixture-pairing",
               "pair_code": "123456",
@@ -1627,22 +1635,22 @@
         },
         {
           "op": "expect_send",
-          "connection": "c1",
+          "connection": "c2",
           "message": {
             "jsonrpc": "2.0",
             "method": "auth.pairPoll",
             "params": {
               "pairing_id": "fixture-pairing"
             },
-            "id": 3
+            "id": 2
           }
         },
         {
           "op": "peer_send",
-          "connection": "c1",
+          "connection": "c2",
           "message": {
             "jsonrpc": "2.0",
-            "id": 3,
+            "id": 2,
             "result": {
               "status": "pending"
             }
@@ -1651,7 +1659,7 @@
         {
           "op": "advance_clock",
           "timer": "pairing_ttl",
-          "connection": "c1",
+          "connection": "c2",
           "fraction": {
             "numerator": 5,
             "denominator": 4
@@ -1670,7 +1678,13 @@
         "connections": [
           {
             "connection": "c1",
-            "sent_count": 3,
+            "state": "closed",
+            "sent_count": 1,
+            "pending_ids": []
+          },
+          {
+            "connection": "c2",
+            "sent_count": 2,
             "pending_ids": []
           }
         ]

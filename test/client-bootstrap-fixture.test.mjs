@@ -26,27 +26,29 @@ const FIXTURE_DIR = new URL('./fixtures/protocol/', import.meta.url);
 const PINNED = {
   'client-bootstrap-framing-v23.2.1.json': [15131, 'be063b519b5d653a4bb4ec3da6f67e5d481a28dcf5913961c848b2b909d4b26d'],
   'client-bootstrap-hello-v23.2.1.json': [26046, 'caf24ad5382e411ba54172b05d6020fc59fc429dc0251ff28db3908b4189784e'],
-  'client-bootstrap-pairing-v23.2.1.json': [35577, '5864c23ef3f31af6134d36770cab80b569b708b35fd3fdbed69fb6db195e3aeb'],
+  'client-bootstrap-pairing-v23.2.1.json': [45943, '19230b310c7482adc740095d5604110937ebaa7803a0fed4c294083a9e63a460'],
   'client-bootstrap-blocks-v23.2.1.json': [45945, '664babdf3131a74e4aaf6d9e5dfb5e4cfc6e197df0a0d48142688820f1be813d'],
   'client-bootstrap-errors-v23.2.1.json': [9179, 'c458d3ffbae846cfb33c032eba14d8f0005c6a1fbe871290b53fcfec8ec41aaa'],
   'client-bootstrap-close-v23.2.1.json': [20879, '2abb6f48942e1dc7bc42014ba016c3d08a6632c59445c048b008a4c411ea1e30'],
-  'client-bootstrap-operations-v23.2.1.json': [66029, '3ccc97e4c80dbf51a0de9c27ef4e974fffa1ee7ec1708aeb7a49ffe14b8366a4'],
-  'client-bootstrap-v1.schema.json': [11465, '4dcce4bc0a63c5e2536411e5276a85ceb8fa20bf5fef64ce2f7a2b8deb069774'],
-  'client-bootstrap-v2.schema.json': [19423, 'f533de2755974147dd3d7c8f61fa3b190fc5031188a67d648b876ee33f979a77'],
+  'client-bootstrap-operations-v23.2.1.json': [66335, '8309f5847ad69aa2d82fcbcb1726918c3a69ba875e04e8f38678352b06b7f7a1'],
+  'client-bootstrap-v1.schema.json': [11521, '970dd68999edc14a4dcc2b67ab2f712e830b7841b2ec4548fee66af117fd281b'],
+  'client-bootstrap-v2.schema.json': [19468, '8ae1c7313d01fa0fa24f4f2079ba453129dc16b678342df6f7ef66b9255d1381'],
   'block-value-v22.json': [3217, 'e8e108d59c40751d67a432543d75cb4bf9146ef9781721012085c80545b854f3'],
   LICENSE: [1070, 'aa329a0bafc839b95124306141db13a381de45818bf629e983c44ea55ab5a7fb'],
 };
 
 // v1の6 file。v2のoperationsは client-bootstrap-operations.test.mjs が読む。
-const SUITE_CASES = { framing: 7, hello: 12, pairing: 10, blocks: 12, errors: 3, close: 8 };
+const SUITE_CASES = { framing: 7, hello: 12, pairing: 12, blocks: 12, errors: 3, close: 8 };
 
 // 公開APIに無い操作（hello前のenvelope、発行paramsの拒否、別のpairing_id）を送るcaseは、RPC層で再生する。
 const RAW_CASES = new Set(['F1-FR-07', 'F1-AU-03', 'F1-AU-04']);
 
-// stepsがtokenを捨てたところで終わるcase。clientはその後、tokenなしのhelloへ戻る（DECISIONS 2026-11-11-01⑦）が、
-// caseはその接続を書いていない。runnerは、その接続でtokenなしのhelloが来たことを確かめて閉じ、
-// `reason`はstepsの中でclientが受けたerrorから読む。
-const ENDS_BEFORE_FALLBACK = new Set(['F1-AU-07']);
+// stepsが接続試行の途中で終わるcase（toolingのpackages/protocol/README.md「AU-07／AU-12の観測の終わり」）。
+// AU-07はtokenを捨てたところ、AU-12は応答の前に切れたpollが完了不明になったところで終わる。clientはその後も
+// tokenなしのhello（DECISIONS 2026-11-11-01⑦）や次のpoll（同2026-11-12-05）へ進むが、caseはその接続を書いていない。
+// runnerはstepsの後の接続を断り、stepsの範囲を観測する。`reason`はstepsの中でclientが受けたerrorから読み、
+// 接続の欄はstepsの最後の接続をRPC層で見る（pairingのpollは公開APIの呼び出しではない）。
+const ENDS_INSIDE_ATTEMPT = new Set(['F1-AU-07', 'F1-AU-12']);
 
 const readFixture = (name) => readFileSync(new URL(name, FIXTURE_DIR));
 const readJson = (name) => JSON.parse(readFixture(name).toString('utf8'));
@@ -63,7 +65,7 @@ test('fixtureのbytesが固定したdigestと一致する', () => {
   }
 });
 
-test('fixtureがschemaの形に沿い、caseが52件そろう', () => {
+test('fixtureがschemaの形に沿い、caseが54件そろう', () => {
   const ops = new Set(schema.properties.cases.items.properties.steps.items.properties.op.enum);
   const expectedKeys = new Set(Object.keys(schema.properties.cases.items.properties.expected.properties));
   const ids = new Set();
@@ -83,7 +85,7 @@ test('fixtureがschemaの形に沿い、caseが52件そろう', () => {
       }
     }
   }
-  assert.equal(ids.size, 52);
+  assert.equal(ids.size, 54);
 });
 
 test('value_refsが同じディレクトリの値を指す', () => {
@@ -109,7 +111,7 @@ async function runCase(suite, testCase) {
   } else if (RAW_CASES.has(testCase.id)) {
     observed = await replayRaw(testCase.steps);
   } else {
-    observed = await runDialog(testCase.steps, { endsBeforeFallback: ENDS_BEFORE_FALLBACK.has(testCase.id) });
+    observed = await runDialog(testCase.steps, { endsInsideAttempt: ENDS_INSIDE_ATTEMPT.has(testCase.id) });
   }
   checkExpected(suite, testCase, observed);
 }
@@ -227,10 +229,10 @@ function planDialog(steps) {
   return actions;
 }
 
-async function runDialog(steps, { endsBeforeFallback = false } = {}) {
+async function runDialog(steps, { endsInsideAttempt = false } = {}) {
   const clock = new FakeClock();
   const peer = await startPeer(steps, clock);
-  const received = observeRemoteErrors();
+  const rpc = observeRpc();
   const credentials = recordingStore();
   const pairs = steps.some((step) => step.message?.method === 'auth.pairBegin');
   const challenges = [];
@@ -246,7 +248,7 @@ async function runDialog(steps, { endsBeforeFallback = false } = {}) {
   let connection;
 
   // peerが先に失敗したら接続を閉じ、応答待ちのclientを解く。
-  const peerDone = (endsBeforeFallback ? peer.done.then(() => closeFallbackHello(peer)) : peer.done).catch(async (error) => {
+  const peerDone = (endsInsideAttempt ? peer.done.then(() => peer.refuse()) : peer.done).catch(async (error) => {
     await peer.close();
     throw error;
   });
@@ -335,7 +337,7 @@ async function runDialog(steps, { endsBeforeFallback = false } = {}) {
     const token = await credentials.peek();
     return {
       result: lastResult,
-      reason: endsBeforeFallback ? received.reasons.at(-1) : lastError?.reason,
+      reason: endsInsideAttempt ? rpc.reasons.at(-1) : lastError?.reason,
       error: lastError instanceof RemoteError ? lastError.toJSON() : undefined,
       compatible,
       token,
@@ -353,36 +355,73 @@ async function runDialog(steps, { endsBeforeFallback = false } = {}) {
         lastError instanceof ProtocolMismatchError && lastError.source === 'client'
           ? { source: 'client', kind: 'incompatible_protocol' }
           : undefined,
+      ...(endsInsideAttempt && observeScriptedConnection(rpc, steps)),
     };
   } finally {
-    received.restore();
+    rpc.restore();
     await Promise.all(clients.map((client) => client.close()));
     await peer.close();
   }
 }
 
-// stepsの後にclientが開いた接続で、tokenなしのhelloが来たことを確かめ、応答せずに閉じる。
-async function closeFallbackHello(peer) {
-  const message = await peer.unscriptedLine();
-  assert.equal(message.method, 'hello');
-  assert.equal(message.params.auth, undefined, 'tokenを捨てた後のhelloにtokenが載っている');
-}
-
-// clientがRPC層で受けたserverのerrorのreasonを、受けた順に記録する。
-function observeRemoteErrors() {
+// clientがRPC層で開いた接続と、各接続で送ったrequestの結末を記録する。serverのerrorのreasonは受けた順に残す。
+function observeRpc() {
   const reasons = [];
+  const opened = [];
+  const sent = new Map();
+  const { open } = RpcConnection;
   const { request } = RpcConnection.prototype;
+  RpcConnection.open = async function (...args) {
+    const connection = await open.apply(this, args);
+    opened.push(connection);
+    sent.set(connection, []);
+    return connection;
+  };
   RpcConnection.prototype.request = function (...args) {
-    return request.apply(this, args).catch((error) => {
-      if (error instanceof RemoteError) reasons.push(error.reason);
-      throw error;
-    });
+    const before = new Set(this.pendingIds);
+    const promise = request.apply(this, args);
+    // 送ったrequestは、送った時点で応答待ちに入る。閉じていて送らなかったものは記録しない。
+    const id = this.pendingIds.find((pendingId) => !before.has(pendingId));
+    const entry = { id, outcome: undefined };
+    if (id !== undefined) sent.get(this)?.push(entry);
+    return promise.then(
+      (result) => {
+        entry.outcome = 'response';
+        return result;
+      },
+      (error) => {
+        if (error instanceof RemoteError) {
+          entry.outcome = 'response';
+          reasons.push(error.reason);
+        } else if (error instanceof CompletionUnknownError) {
+          entry.outcome = 'completion_unknown';
+        }
+        throw error;
+      },
+    );
   };
   return {
     reasons,
+    opened,
+    sent,
     restore() {
+      RpcConnection.open = open;
       RpcConnection.prototype.request = request;
     },
+  };
+}
+
+// stepsの最後の接続の状態と、その接続で送ったrequestの結末。
+function observeScriptedConnection(rpc, steps) {
+  const connection = rpc.opened[steps.filter((step) => step.op === 'connect').length - 1];
+  const requests = rpc.sent.get(connection);
+  const lost = requests.filter((request) => request.outcome === 'completion_unknown').map((request) => request.id);
+  return {
+    connection: connection.state,
+    pending_ids: connection.pendingIds,
+    unanswered_ids: lost,
+    completed_ids: requests.filter((request) => request.outcome === 'response').map((request) => request.id),
+    local_failures: lost.map((id) => ({ id, outcome: 'completion_unknown' })),
   };
 }
 

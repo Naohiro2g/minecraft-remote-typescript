@@ -3,9 +3,12 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import net from 'node:net';
-import { clearTimeout, setImmediate, setTimeout } from 'node:timers';
+import { clearTimeout, setTimeout } from 'node:timers';
 
 const WAIT_MS = 2000;
+
+// FakeClockのsleepが実時間で待つ長さ。相手が先に送ったもの（EOFなど）を、sleepの間に受け取れるようにする（F1-AU-11）。
+const SLEEP_IO_MS = 10;
 
 // sleepすると、その長さだけすぐ進む時計。v1の`advance_time`もこの時計を進める。
 export class FakeClock {
@@ -21,7 +24,7 @@ export class FakeClock {
   sleep(milliseconds) {
     this.slept.push(milliseconds);
     this.advance(milliseconds);
-    return new Promise((resolve) => setImmediate(resolve));
+    return new Promise((resolve) => setTimeout(resolve, SLEEP_IO_MS));
   }
 
   setTimer(callback, milliseconds) {
@@ -71,6 +74,7 @@ export async function startPeer(steps, clock) {
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  let stopped;
 
   const nextSocket = () =>
     queued.length > 0 ? Promise.resolve(queued.shift()) : new Promise((resolve) => waiting.push(resolve));
@@ -123,12 +127,9 @@ export async function startPeer(steps, clock) {
         connections: queued.length,
       };
     },
-    // stepsの後にclientが開いた接続の最初の行を読み、その接続を閉じる。
-    async unscriptedLine() {
-      const peerSocket = await within(nextSocket(), 'stepsの後の接続');
-      const line = await within(peerSocket.nextLine(), 'stepsの後の接続の行');
-      peerSocket.socket.destroy();
-      return JSON.parse(line);
+    // これ以後の接続を断る。受けた接続はそのまま残す。
+    refuse() {
+      stopped ??= new Promise((resolve) => server.close(resolve));
     },
     // clientが送ったmessage。すべての接続の、読んだ行と読んでいない行。
     received() {
@@ -138,7 +139,8 @@ export async function startPeer(steps, clock) {
       for (const peerSocket of accepted) {
         peerSocket.socket.destroy();
       }
-      await new Promise((resolve) => server.close(resolve));
+      stopped ??= new Promise((resolve) => server.close(resolve));
+      await stopped;
     },
   };
 }
