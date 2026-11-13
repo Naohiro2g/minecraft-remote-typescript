@@ -35,12 +35,10 @@ const RESPONSE_TIMEOUT = 60_000;
 // 入力の後、その時刻で進められる処理（localhostの送受信を含む）を待つ実時間（ms）。
 const SETTLE_MS = 30;
 
-// このclientに無い機能やcaseの読み方の違いに当たるcase。runnerは最後まで走らせ、当たったところで失敗する。
+// このclientに無い機能に当たるcase。runnerは最後まで走らせ、当たったところで失敗する。
 // node:testのtodoとして報告し、合格には数えない。
 const NOT_YET = {
   'F1-OP-06': 'FAST（idなしのworld.setBlock）と、connection.flushが保証する範囲を、このclientはまだ持たない',
-  'F1-OP-08':
-    'このclientはauth_requiredの後のpairingを別の接続で行う（F1-AU-01の形）。このcaseはhelloと同じ接続でpairingする',
   'F1-OP-11': 'entity handle、event cursor、catalogのcacheを、このclientはまだ持たない',
 };
 
@@ -315,18 +313,19 @@ async function startHarness(testCase) {
     for (const [key, rows] of Object.entries(expected)) {
       const at = `${where}.${key}`;
       switch (key) {
-        // 記載した行だけを比べる。connectionsは、記載した欄だけを比べる（CLIENT_BOOTSTRAP_V2の「expectedの欄」）。
+        // 書いた行と欄だけを比べ、書いた欄が観測に無ければ不一致（CLIENT_BOOTSTRAP_V2の「expectedの欄」）。
         case 'calls':
-          for (const row of rows) assert.deepEqual(observeCall(row.call), row, at);
+          for (const row of rows) assert.deepEqual(written(observeCall(row.call), row), row, at);
           break;
         case 'connections':
+          // pending_idsは順を問わない集合として比べる。
           for (const row of rows) {
-            const observed = observeConnection(row.connection);
-            assert.deepEqual(pick(observed, Object.keys(row)), row, at);
+            const observed = written(observeConnection(row.connection), row);
+            assert.deepEqual(sortIds(observed), sortIds(row), at);
           }
           break;
         case 'negotiations':
-          for (const row of rows) assert.deepEqual(observeNegotiation(row.connection), row, at);
+          for (const row of rows) assert.deepEqual(written(observeNegotiation(row.connection), row), row, at);
           break;
         case 'events': {
           const observed = events.map((event) => ({
@@ -334,12 +333,12 @@ async function startHarness(testCase) {
             connection: nameOf(event.connection),
             previous_connection: nameOf(event.previous_connection),
           }));
-          for (const row of rows) {
-            assert.ok(
-              observed.some((event) => isDeepStrictEqual(event, row)),
-              `${at}: ${JSON.stringify(row)}が無い。観測: ${JSON.stringify(observed)}`,
-            );
-          }
+          const unmatched = unmatchedRow(rows, observed);
+          assert.equal(
+            unmatched,
+            undefined,
+            `${at}: ${JSON.stringify(unmatched)}に当たる通知が無い。観測: ${JSON.stringify(observed)}`,
+          );
           break;
         }
         case 'connect_attempts':
@@ -412,8 +411,29 @@ function injectedError(code, message) {
   return Object.assign(new Error(message), { code });
 }
 
-function pick(object, keys) {
-  return Object.fromEntries(keys.filter((key) => key in object).map((key) => [key, object[key]]));
+// 観測のうち、行に書いた欄。
+function written(observed, row) {
+  return Object.fromEntries(Object.keys(row).map((key) => [key, observed[key]]));
+}
+
+function sortIds(row) {
+  return 'pending_ids' in row ? { ...row, pending_ids: [...row.pending_ids].sort((a, b) => a - b) } : row;
+}
+
+// 期待する各行に、書いた欄がすべて一致する別々の通知を対応させる。対応の付かない行を返す。
+// 余分な通知と、通知の余分な欄は許す。同じ通知を二つの行に使わない。
+function unmatchedRow(rows, observed) {
+  const owner = observed.map(() => undefined);
+  const fits = (row, event) => Object.entries(row).every(([key, value]) => isDeepStrictEqual(event[key], value));
+  const assign = (index, seen) =>
+    observed.some((event, slot) => {
+      if (seen.has(slot) || !fits(rows[index], event)) return false;
+      seen.add(slot);
+      if (owner[slot] !== undefined && !assign(owner[slot], seen)) return false;
+      owner[slot] = index;
+      return true;
+    });
+  return rows.find((_, index) => !assign(index, new Set()));
 }
 
 function settle() {

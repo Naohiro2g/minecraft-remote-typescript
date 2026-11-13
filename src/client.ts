@@ -2,6 +2,7 @@
 import { type Clock, systemClock } from './clock.js';
 import { type CredentialKey, type CredentialStore, noCredentialStore } from './credentials.js';
 import {
+  CompletionUnknownError,
   ConnectionError,
   McRemoteError,
   NotSentError,
@@ -113,7 +114,8 @@ interface Session {
  * 接続してhelloを通し、使える状態のclientを返す。
  *
  * まず保存済みのtokenでhelloを試す。`token_*`ではそのtokenを消してtokenなしのhelloからやり直し、
- * `auth_required`のときだけpairingする（wire 6.5）。pairingは一回の`connect()`につき一度だけ。
+ * `auth_required`のときだけpairingする（wire 6.5）。pairingは一回の`connect()`につき一度だけ。途中で接続が切れたら、
+ * 期限の内なら新しい接続でpollを続け、続けたpollが失敗したらそのerrorを投げる。
  * `onPairing`を渡さなければpairingせず、serverのerrorをそのまま投げる。
  */
 export async function connect(options: ConnectOptions): Promise<MinecraftRemote> {
@@ -152,9 +154,11 @@ async function establish(
 }
 
 // pairingは専用の接続で行い、終わったら閉じる（helloは新しい接続で送る）。
+// 途中で接続が切れたら、期限の内なら、同じpairing_idの次のpollを新しい接続で送って続ける（DECISIONS 2026-11-12-05）。
 async function pair(options: ConnectOptions, onPairing: PairingHandler): Promise<string> {
   const clock = options.clock ?? systemClock;
-  const connection = await RpcConnection.open(options.host, options.port ?? DEFAULT_PORT, connectionOptions(options));
+  const open = () => RpcConnection.open(options.host, options.port ?? DEFAULT_PORT, connectionOptions(options));
+  let connection = await open();
   try {
     const begin = await connection.request('auth.pairBegin', {
       token_type: 'session',
@@ -172,12 +176,9 @@ async function pair(options: ConnectOptions, onPairing: PairingHandler): Promise
       expiresInSeconds: begin.expires_in,
     });
     for (;;) {
-      const poll = await connection.request('auth.pairPoll', { pairing_id: begin.pairing_id });
-      const status = (poll as { status?: unknown } | null)?.status;
-      if (status === 'ok' && typeof (poll as { token?: unknown }).token === 'string') {
-        return (poll as { token: string }).token;
-      }
-      if (status !== 'pending') throw new McRemoteError('auth.pairPoll result is malformed');
+      if (connection.state === 'closed') connection = await open();
+      const token = await pollOnce(connection, begin.pairing_id);
+      if (token !== undefined) return token;
       await clock.sleep(PAIR_POLL_INTERVAL_MS);
       // 期限を過ぎたら、次のpollを送らずにclientが判断して止める（DECISIONS 2026-11-11-01⑧）。
       if (clock.now() >= deadline) throw new PairingExpiredError();
@@ -185,6 +186,22 @@ async function pair(options: ConnectOptions, onPairing: PairingHandler): Promise
   } finally {
     await connection.close();
   }
+}
+
+// 承認されたらtoken、まだならundefined。応答の前に接続が切れたpollは完了不明として終え、undefinedにする。
+// 次のpollはその送り直しではなく、pollの続き（DECISIONS 2026-11-12-05）。
+async function pollOnce(connection: RpcConnection, pairingId: string): Promise<string | undefined> {
+  let poll: unknown;
+  try {
+    poll = await connection.request('auth.pairPoll', { pairing_id: pairingId });
+  } catch (error) {
+    if (error instanceof CompletionUnknownError) return undefined;
+    throw error;
+  }
+  const status = (poll as { status?: unknown } | null)?.status;
+  if (status === 'ok' && typeof (poll as { token?: unknown }).token === 'string') return (poll as { token: string }).token;
+  if (status !== 'pending') throw new McRemoteError('auth.pairPoll result is malformed');
+  return undefined;
 }
 
 async function openSession(
