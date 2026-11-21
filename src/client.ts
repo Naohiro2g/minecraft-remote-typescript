@@ -1,4 +1,6 @@
 // 一般用途のClient API。接続、hello、world.setBlock／world.getBlock、close、切れた後のつなぎ直し。
+import { isDeepStrictEqual } from 'node:util';
+
 import { type Clock, systemClock } from './clock.js';
 import { type CredentialKey, type CredentialStore, noCredentialStore } from './credentials.js';
 import {
@@ -41,7 +43,7 @@ export interface ConnectOptions {
    * 接続を回収する。既定は15分。`Infinity`なら回収しない。呼び出しごとに延ばせる（`CallOptions`）。
    */
   responseTimeout?: number;
-  /** TCPのkeepaliveを始めるまでの静かな時間（ms）。切れた接続を見つける。`false`なら使わない。既定は30秒。 */
+  /** TCPのkeepaliveを始めるまでの静かな時間（ms）。切れた接続を見つける。`false`なら使わない。既定は3分。 */
   keepAliveDelay?: number | false;
   /** 切れた後の次の呼び出しで、自動でつなぎ直す。既定は有効。`false`で無効。 */
   reconnect?: boolean | ReconnectOptions;
@@ -97,9 +99,10 @@ const REJECTED_TOKEN_REASONS = new Set(['token_expired', 'token_revoked', 'token
 // auth.pairPollの間隔（wire 6.5の非規範の目安、1〜2秒）。
 const PAIR_POLL_INTERVAL_MS = 1500;
 
-// 値は実測で決める（DECISIONS 2026-11-11-01③）。keepaliveで切れたと分かるまで（Linuxの既定で約12分）より長くする。
+// 応答待ちの最後の上限は15分（DECISIONS 2026-11-13-02）。
 const DEFAULT_RESPONSE_TIMEOUT_MS = 15 * 60_000;
-const DEFAULT_KEEPALIVE_DELAY_MS = 30_000;
+// Linuxでは、最初のprobeまで3分、Node.jsの既定で1秒間隔のprobeを10回送り、無応答なら約3分10秒で切れる。
+const DEFAULT_KEEPALIVE_DELAY_MS = 3 * 60_000;
 const DEFAULT_RECONNECT: Required<ReconnectOptions> = { initialDelay: 500, maxDelay: 30_000, giveUpAfter: 5 * 60_000 };
 
 // 成功resultが今のbuild contextを返すsetter（wire 5.1）。
@@ -353,7 +356,7 @@ export class MinecraftRemote {
       this.#options.onReconnect?.({
         previous,
         hello: session.hello,
-        serverChanged: previous.server !== session.hello.server,
+        serverChanged: !isDeepStrictEqual(previous.server, session.hello.server),
         sessionChanged: previous.session !== session.hello.session,
         catalogHashChanged: previous.catalogHash !== session.hello.catalogHash,
       });

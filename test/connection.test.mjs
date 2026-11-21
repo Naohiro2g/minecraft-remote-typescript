@@ -1,6 +1,7 @@
 // 応答の待ち方とつなぎ直し（DECISIONS 2026-11-11-01の②〜⑤、wire 3.4）。F1 v2（operations）は仮想の時計で見る。
 // ここでは、実時間の時計と、F1が数値を決めないbackoffなどを見る。
 import assert from 'node:assert/strict';
+import net from 'node:net';
 import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 import { setTimeout } from 'node:timers';
@@ -20,7 +21,7 @@ const LIMIT = { timeout: 5000 };
 
 function helloResult(overrides = {}) {
   return {
-    protocol: '23.2.1',
+    protocol: '24.0.0',
     mc_version: '1.21.11',
     supported_mc_versions: ['1.21.11'],
     catalogHash: null,
@@ -30,7 +31,7 @@ function helloResult(overrides = {}) {
     dimension: 'minecraft:overworld',
     origin: [200, 0, 200],
     permissions: { online: true, offline: false, buildRange: 100 },
-    server: 'test-server',
+    server: { name: 'McRemote', version: '2400.0.0rc1' },
     ...overrides,
   };
 }
@@ -42,7 +43,7 @@ const fail = (id, code, message, reason) => ({
   message: { jsonrpc: '2.0', id, error: { code, message, data: { reason } } },
 });
 const pause = (milliseconds) => ({ op: 'pause', milliseconds });
-const hello = (params = {}) => send(1, 'hello', { protocol: '23.2.1', ...params });
+const hello = (params = {}) => send(1, 'hello', { protocol: '24.0.0', ...params });
 const AIR = { block_id: 'minecraft:air', state: {} };
 
 // peerとclientを走らせ、最後にpeerのstepsが尽きたことと、stepsに無い送信が無いことを確かめる。
@@ -124,6 +125,38 @@ test('③ 呼び出しごとにresponseTimeoutを延ばせる', LIMIT, async () 
   await withPeer(steps, async ({ connect }) => {
     const remote = await connect({ responseTimeout: 100, clock: undefined });
     assert.deepEqual(await remote.getBlock(0, 0, 0, { responseTimeout: 500 }), AIR);
+  });
+});
+
+test('TCP keepaliveは既定で3分後に最初のprobeを送る設定にする', LIMIT, async (t) => {
+  const keepAlive = t.mock.method(net.Socket.prototype, 'setKeepAlive');
+  const steps = [{ op: 'connect' }, hello(), reply(1, helloResult())];
+  await withPeer(steps, async ({ connect }) => {
+    await connect();
+    assert.deepEqual(keepAlive.mock.calls.map(({ arguments: args }) => args), [[true, 180_000]]);
+  });
+});
+
+test('③ 同じ接続で応答待ちが重なると、最長のresponseTimeoutで回収する', LIMIT, async () => {
+  const steps = [
+    { op: 'connect' },
+    hello(),
+    reply(1, helloResult()),
+    send(2, 'world.getBlock', [0, 0, 0]),
+    send(3, 'world.getBlock', [1, 0, 0]),
+  ];
+  await withPeer(steps, async ({ peer, clock, connect }) => {
+    const remote = await connect({ responseTimeout: 100, reconnect: false });
+    const failures = Promise.all([
+      assert.rejects(remote.getBlock(0, 0, 0, { responseTimeout: 200 }), CompletionUnknownError),
+      assert.rejects(remote.getBlock(1, 0, 0, { responseTimeout: 500 }), CompletionUnknownError),
+    ]);
+    await peer.done;
+    clock.advance(499);
+    assert.equal(remote.state, 'open');
+    clock.advance(1);
+    assert.equal(remote.state, 'closed');
+    await failures;
   });
 });
 
@@ -278,7 +311,7 @@ test('⑤C つなぎ直したhelloの版が合わなければ、送らずに閉�
     { op: 'peer_eof' },
     { op: 'connect' },
     hello({ build: { dimension: 'minecraft:overworld', origin: [200, 0, 200] } }),
-    reply(1, helloResult({ protocol: '24.0.0' })),
+    reply(1, helloResult({ protocol: '23.3.0' })),
     { op: 'client_close' },
   ];
   await withPeer(steps, async ({ connect }) => {
