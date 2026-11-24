@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   PROTOCOL_VERSION,
   PairingExpiredError,
+  ProtocolMismatchError,
   RemoteError,
   connect,
   isCompatibleProtocol,
@@ -14,7 +15,7 @@ import {
 import { FakeClock, startPeer } from './support/scripted-peer.mjs';
 
 const HELLO_RESULT = {
-  protocol: '23.2.1',
+  protocol: '24.0.0',
   mc_version: '1.21.11',
   supported_mc_versions: ['1.21.11'],
   catalogHash: null,
@@ -24,35 +25,61 @@ const HELLO_RESULT = {
   dimension: 'minecraft:overworld',
   origin: [200, 0, 200],
   permissions: { online: true, offline: false, buildRange: 100 },
-  server: 'test-server',
+  server: { name: 'McRemote', version: '2400.0.0rc1' },
 };
 
-test('申告するprotocolは23.2.1', () => {
-  assert.equal(PROTOCOL_VERSION, '23.2.1');
+test('申告するprotocolは24.0.0', () => {
+  assert.equal(PROTOCOL_VERSION, '24.0.0');
 });
 
 test('互換判定はmajorの一致とserverのminorが同じか上で、patchは見ない', () => {
   const cases = [
-    ['23.2.1', '23.2.1', true],
-    ['23.2.1', '23.2.0', true],
-    ['23.2.1', '23.3.0', true],
-    ['23.2.1', '23.1.9', false],
-    ['23.2.1', '24.2.1', false],
-    ['23.2.1', '22.9.9', false],
-    ['23.2.1', '23.2', false],
-    ['23.2.1', '2321.1.0', false],
+    ['24.0.0', '24.0.0', true],
+    ['24.0.0', '24.0.1', true],
+    ['24.0.0', '24.1.0', true],
+    ['24.1.2', '24.1.0', true],
+    ['24.1.2', '24.0.9', false],
+    ['24.0.0', '23.3.0', false],
+    ['24.0.0', '25.0.0', false],
+    ['24.0.0', '24.0', false],
+    ['24.0.0', '2400.0.0', false],
   ];
   for (const [client, server, compatible] of cases) {
     assert.equal(isCompatibleProtocol(client, server), compatible, `${client} / ${server}`);
   }
-  assert.throws(() => isCompatibleProtocol('23.2', '23.2.1'), RangeError);
+  assert.throws(() => isCompatibleProtocol('24.0', '24.0.0'), RangeError);
+});
+
+test('helloで24.0.0を申告し、23.xの成功応答は次のrequestを送らずに閉じる', async () => {
+  const steps = [
+    { op: 'connect' },
+    { op: 'client_send', message: { jsonrpc: '2.0', id: 1, method: 'hello', params: { protocol: '24.0.0' } } },
+    { op: 'peer_send', message: { jsonrpc: '2.0', id: 1, result: { ...HELLO_RESULT, protocol: '23.3.0' } } },
+    { op: 'client_close' },
+  ];
+  const peer = await startPeer(steps, new FakeClock());
+  try {
+    await Promise.all([
+      assert.rejects(connect({ host: '127.0.0.1', port: peer.port }), {
+        constructor: ProtocolMismatchError,
+        reason: 'protocol_mismatch',
+        source: 'client',
+        server: '23.3.0',
+        clientRequires: '24.0.0',
+      }),
+      peer.done,
+    ]);
+    assert.deepEqual(peer.unexpected(), { lines: [], connections: 0 });
+  } finally {
+    await peer.close();
+  }
 });
 
 test('pairingは表示用の情報だけを渡し、expires_inを過ぎてもpendingならPairingExpiredError', async () => {
   const clock = new FakeClock();
   const steps = [
     { op: 'connect' },
-    { op: 'client_send', message: { jsonrpc: '2.0', id: 1, method: 'hello', params: { protocol: '23.2.1' } } },
+    { op: 'client_send', message: { jsonrpc: '2.0', id: 1, method: 'hello', params: { protocol: '24.0.0' } } },
     {
       op: 'peer_send',
       message: { jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'auth required', data: { reason: 'auth_required' } } },
@@ -95,7 +122,7 @@ test('pairingは表示用の情報だけを渡し、expires_inを過ぎてもpen
 
 const authRequired = [
   { op: 'connect' },
-  { op: 'client_send', message: { jsonrpc: '2.0', id: 1, method: 'hello', params: { protocol: '23.2.1' } } },
+  { op: 'client_send', message: { jsonrpc: '2.0', id: 1, method: 'hello', params: { protocol: '24.0.0' } } },
   {
     op: 'peer_send',
     message: { jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'auth required', data: { reason: 'auth_required' } } },
@@ -132,7 +159,7 @@ test('2026-11-12-05 応答の前に切れたpollの後、同じpairing_idの次�
     { op: 'connect' },
     {
       op: 'client_send',
-      message: { jsonrpc: '2.0', id: 1, method: 'hello', params: { protocol: '23.2.1', auth: { token: 'test-token' } } },
+      message: { jsonrpc: '2.0', id: 1, method: 'hello', params: { protocol: '24.0.0', auth: { token: 'test-token' } } },
     },
     { op: 'peer_send', message: { jsonrpc: '2.0', id: 1, result: HELLO_RESULT } },
   ];
@@ -188,7 +215,7 @@ test('2026-11-12-05 続けたpollがpair_not_foundで失敗したら、二度目
 test('setBlockの文字列はstateを指定しないblock IDとして送る', async () => {
   const steps = [
     { op: 'connect' },
-    { op: 'client_send', message: { jsonrpc: '2.0', id: 1, method: 'hello', params: { protocol: '23.2.1' } } },
+    { op: 'client_send', message: { jsonrpc: '2.0', id: 1, method: 'hello', params: { protocol: '24.0.0' } } },
     { op: 'peer_send', message: { jsonrpc: '2.0', id: 1, result: HELLO_RESULT } },
     {
       op: 'client_send',

@@ -10,6 +10,8 @@ import process from 'node:process';
 
 import { connect, memoryCredentialStore } from '@mc-remote/client';
 
+import pkg from '../package.json' with { type: 'json' };
+
 const say = (line) => process.stdout.write(`${line}\n`);
 
 const host = process.env.MCREMOTE_HOST;
@@ -28,7 +30,7 @@ const fail = (error) => {
 const remote = await connect({
   host,
   port,
-  client: { name: 'minecraft-remote-typescript-example', version: '0.0.0', locale: 'ja' },
+  client: { name: 'minecraft-remote-typescript-example', version: pkg.version, locale: 'ja' },
   credentials: memoryCredentialStore(),
   onPairing: ({ command, expiresInSeconds }) => {
     say(`Minecraftの中で、${expiresInSeconds}秒以内に次を実行してください: ${command}`);
@@ -38,6 +40,8 @@ const remote = await connect({
 if (remote) {
   try {
     say(`hello: protocol ${remote.hello.protocol}, Minecraft ${remote.hello.mc_version}`);
+    const server = remote.hello.server;
+    if (server && typeof server === 'object') say(`server: ${server.name} ${server.version}`);
 
     // 元のブロックはIDとstateで戻す。チェストの中身や看板の文字など、getBlockで読めないものは戻らない。
     const before = await remote.getBlock(x, y, z);

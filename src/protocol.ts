@@ -1,7 +1,7 @@
 // Protocol contract（knowledge 10-protocol）のうち、このclientが投影する型と定数。
 
 /** このclientがhelloで申告するprotocol。 */
-export const PROTOCOL_VERSION = '23.2.1';
+export const PROTOCOL_VERSION = '24.0.0';
 
 /** McRemoteのTCPの通常のport。 */
 export const DEFAULT_PORT = 25575;
@@ -49,7 +49,8 @@ export interface HelloResult {
   readonly dimension: string;
   readonly origin: Position;
   readonly permissions: { readonly online: boolean; readonly offline: boolean; readonly buildRange: number };
-  readonly server: string;
+  /** serverの名前と版（wire 6.2）。以前のserverの文字列や省略も受け取る。 */
+  readonly server?: Readonly<{ name: string; version: string }> | string;
   readonly [key: string]: unknown;
 }
 
